@@ -5,6 +5,7 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.Reader;
@@ -73,82 +74,96 @@ public class QuestionToWiki {
 			inputReader = new BufferedReader(new InputStreamReader(new FileInputStream(inputPath)));
 			outputWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputPath, true)));
 
-			// write file header
-			outputWriter.write("id,correctAnswer");
-			outputWriter.newLine();
-			outputWriter.flush();
+			File outputFileTest = new File(outputPath);
+			String prevId = null;
+			if (outputFileTest.exists()) {
+				prevId = readPreviousCompletedId();
+				System.out.println("Last completed Id: " + prevId + "\n\n");
+			} else {
+				// write file header
+				outputWriter.write("id,correctAnswer");
+				outputWriter.newLine();
+				outputWriter.flush();
+			}
 
 			String aLine;
 			// skip first line
 			inputReader.readLine();
 
-			int lineCount = 0;
+			boolean startQuery = false;
+			if (prevId == null)
+				startQuery = true;
 			while ((aLine = inputReader.readLine()) != null) {
-				StringTokenizer tk = new StringTokenizer(aLine, "\t");
-				if (tk.countTokens() == 6) {
-					String id = tk.nextToken();
-					String question = tk.nextToken();
+				if (startQuery) {
+					StringTokenizer tk = new StringTokenizer(aLine, "\t");
+					if (tk.countTokens() == 6) {
+						String id = tk.nextToken();
+						String question = escapeSymbols(tk.nextToken());
 
-					System.out.println("\n\nQuery id=" + id + " ===> " + question);
+						System.out.println("\n\nQuery id=" + id + " ===> " + question);
 
-					double maxScore = 0.0;
-					int finalAns = -1;
-					// get score from 4 queries
-					for (int i = 0; i < 4; i++) {
-						int answerId = (i + 1);
-						String qstring = question;
-						String ans = tk.nextToken();
-						qstring = createQueryString(qstring, ans);
+						double maxScore = 0.0;
+						int finalAns = -1;
+						// get score from 4 queries
+						for (int i = 0; i < 4; i++) {
+							int answerId = (i + 1);
 
-						QueryParser parser = new QueryParser("text", analyzer);
-						Query query = parser.parse("title:(" + qstring + ") OR text:(" + qstring + ")");
-						System.out.println("Ans " + answerId + ":  " + ans);
+							String qstring = question;
+							String ans = escapeSymbols(tk.nextToken());
+							qstring = createQueryString(qstring, ans);
 
-						// get top 10 hits
-						TopScoreDocCollector collector = TopScoreDocCollector.create(topN, true);
-						searcher.search(query, collector);
-						ScoreDoc[] hits = collector.topDocs().scoreDocs;
+							QueryParser parser = new QueryParser("text", analyzer);
+							Query query = parser.parse("title:(" + qstring + ") OR text:(" + qstring + ")");
+							System.out.println("Ans " + answerId + ":  " + ans);
 
-						System.out.println("Found : " + hits.length + " hits.");
-						double sumScore = 0.0;
-						for (int j = 0; j < hits.length; j++) {
-							int docId = hits[j].doc;
-							Document d = searcher.doc(docId);
-							String title = d.get("title");
-							String text = d.get("text");
-							double score = hits[j].score;
-							System.out.println((j + 1) + ": title=" + title + ", score=" + score);
+							// get top 10 hits
+							TopScoreDocCollector collector = TopScoreDocCollector.create(topN, true);
+							searcher.search(query, collector);
+							ScoreDoc[] hits = collector.topDocs().scoreDocs;
 
-							sumScore += score;
+							System.out.println("Found : " + hits.length + " hits.");
+							double sumScore = 0.0;
+							for (int j = 0; j < hits.length; j++) {
+								int docId = hits[j].doc;
+								Document d = searcher.doc(docId);
+								String title = d.get("title");
+								String text = d.get("text");
+								double score = hits[j].score;
+								System.out.println((j + 1) + ": title=" + title + ", score=" + score);
+
+								sumScore += score;
+							}
+
+							if (sumScore > maxScore) {
+								maxScore = sumScore;
+								finalAns = answerId;
+							}
+						} // end of for
+
+						if (finalAns > 0) {
+							String ansStr = "";
+							if (finalAns == 1)
+								ansStr = "A";
+							else if (finalAns == 2)
+								ansStr = "B";
+							else if (finalAns == 3)
+								ansStr = "C";
+							else if (finalAns == 4)
+								ansStr = "D";
+
+							outputWriter.write(id);
+							outputWriter.write(",");
+							outputWriter.write(ansStr);
+							outputWriter.newLine();
+
+							outputWriter.flush();
 						}
-
-						if (sumScore > maxScore) {
-							maxScore = sumScore;
-							finalAns = answerId;
-						}
-					} // end of for
-
-					if (finalAns > 0) {
-						String ansStr = "";
-						if (finalAns == 1)
-							ansStr = "A";
-						else if (finalAns == 2)
-							ansStr = "B";
-						else if (finalAns == 3)
-							ansStr = "C";
-						else if (finalAns == 4)
-							ansStr = "D";
-
-						outputWriter.write(id);
-						outputWriter.write(",");
-						outputWriter.write(ansStr);
-						outputWriter.newLine();
-
-						outputWriter.flush();
 					}
 				}
 
-				lineCount++;
+				if (prevId != null && aLine.startsWith(prevId))
+					startQuery = true;
+
 			} // end of while
 
 		} finally {
@@ -168,13 +183,41 @@ public class QuestionToWiki {
 
 	private String createQueryString(String qstring, String ans) {
 		if (qstring.contains("__________"))
-			qstring = qstring.replace("__________", ans);
+			qstring = qstring.replace("__________", " " + ans + " ");
 		else {
 			qstring = qstring.replace("?", " ");
 			qstring = qstring + " " + ans;
 		}
 
 		return qstring;
+	}
+
+	private String escapeSymbols(String origin) {
+		// escape + - && || ! ( ) { } [ ] ^ " ~ * ? : \
+		return origin.replace("(", " ").replace(")", " ").replace("+", " ").replace("-", " ").replace("&", " ")
+				.replace("|", " ").replace("{", " ").replace("}", " ").replace("[", " ").replace("]", " ")
+				.replace("^", " ").replace("\"", " ").replace("~", " ").replace("*", " ").replace("?", " ")
+				.replace(":", " ").replace("\\", " ").replace("/", " ");
+	}
+
+	private String readPreviousCompletedId() {
+		String prevId = null;
+
+		String aLine;
+		try {
+			BufferedReader inputReader = new BufferedReader(new InputStreamReader(new FileInputStream(outputPath)));
+
+			// read until last line
+			while ((aLine = inputReader.readLine()) != null) {
+				prevId = aLine.split(",")[0];
+			}
+
+			inputReader.close();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		return prevId;
 	}
 
 	public static void main(String[] args) throws Exception {

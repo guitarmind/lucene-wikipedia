@@ -21,12 +21,14 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FieldInvertState;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopScoreDocCollector;
+import org.apache.lucene.search.similarities.DefaultSimilarity;
 import org.apache.lucene.store.FSDirectory;
 
 public class QuestionToWiki {
@@ -59,27 +61,155 @@ public class QuestionToWiki {
 			};
 
 			luceneReader = DirectoryReader.open(FSDirectory.open(new File(luceneFolderPath)));
-			searcher = new IndexSearcher(luceneReader);
 
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
 	}
 
-	public void questionAnswering(int topN) throws Exception {
+	public void questionAnsweringByTopN(int topN) throws Exception {
 		BufferedReader inputReader = null;
 		BufferedWriter outputWriter = null;
 
 		try {
-			inputReader = new BufferedReader(new InputStreamReader(new FileInputStream(inputPath)));
+			searcher = new IndexSearcher(luceneReader);
 
+			inputReader = new BufferedReader(new InputStreamReader(new FileInputStream(inputPath)));
 
 			File outputFileTest = new File(outputPath);
 			String prevId = null;
 			if (outputFileTest.exists()) {
 				prevId = readPreviousCompletedId();
 				System.out.println("Last completed Id: " + prevId + "\n\n");
-				
+
+				outputWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputPath, true)));
+			} else {
+				outputWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputPath, false)));
+				// write file header
+				outputWriter.write("id,correctAnswer");
+				outputWriter.newLine();
+				outputWriter.flush();
+			}
+
+			String aLine;
+			// skip first line
+			inputReader.readLine();
+
+			boolean startQuery = false;
+			if (prevId == null)
+				startQuery = true;
+			while ((aLine = inputReader.readLine()) != null) {
+				if (startQuery) {
+					StringTokenizer tk = new StringTokenizer(aLine, "\t");
+					if (tk.countTokens() == 6) {
+						String id = tk.nextToken();
+						String question = escapeSymbols(tk.nextToken());
+
+						System.out.println("\n\nQuery id=" + id + " ===> " + question);
+
+						double maxScore = 0.0;
+						int finalAns = -1;
+						// get score from 4 queries
+						for (int i = 0; i < 4; i++) {
+							int answerId = (i + 1);
+
+							String qstring = question;
+							String ans = escapeSymbols(tk.nextToken());
+							qstring = createQueryString(qstring, ans);
+
+							QueryParser parser = new QueryParser("text", analyzer);
+							Query query = parser.parse("title:(" + qstring + ") OR text:(" + qstring + ")");
+							System.out.println("Ans " + answerId + ":  " + ans);
+
+							// get top hits
+							TopScoreDocCollector collector = TopScoreDocCollector.create(topN, true);
+							searcher.search(query, collector);
+							ScoreDoc[] hits = collector.topDocs().scoreDocs;
+
+							System.out.println("Found : " + hits.length + " hits.");
+							double sumScore = 0.0;
+							for (int j = 0; j < hits.length; j++) {
+								int docId = hits[j].doc;
+								Document d = searcher.doc(docId);
+								String title = d.get("title");
+								String text = d.get("text");
+								double score = hits[j].score;
+								System.out.println((j + 1) + ": title=" + title + ", score=" + score);
+
+								sumScore += score;
+							}
+
+							if (sumScore > maxScore) {
+								maxScore = sumScore;
+								finalAns = answerId;
+							}
+						} // end of for
+
+						if (finalAns > 0) {
+							String ansStr = "";
+							if (finalAns == 1)
+								ansStr = "A";
+							else if (finalAns == 2)
+								ansStr = "B";
+							else if (finalAns == 3)
+								ansStr = "C";
+							else if (finalAns == 4)
+								ansStr = "D";
+
+							outputWriter.write(id);
+							outputWriter.write(",");
+							outputWriter.write(ansStr);
+							outputWriter.newLine();
+
+							outputWriter.flush();
+						}
+					}
+				}
+
+				if (prevId != null && aLine.startsWith(prevId))
+					startQuery = true;
+
+			} // end of while
+
+		} finally {
+			if (luceneReader != null)
+				luceneReader.close();
+
+			if (inputReader != null)
+				inputReader.close();
+
+			if (outputWriter != null) {
+				outputWriter.flush();
+				outputWriter.close();
+			}
+
+		}
+	}
+
+	public void questionAnsweringWithoutLengthNorm(int topN) throws Exception {
+		BufferedReader inputReader = null;
+		BufferedWriter outputWriter = null;
+
+		try {
+			searcher = new IndexSearcher(luceneReader);
+			searcher.setSimilarity(new DefaultSimilarity() {
+				public float lengthNorm(FieldInvertState state) {
+					return (float) (1.0 / state.getLength());
+				}
+
+				// public float tf(float freq) {
+				// return (float) freq;
+				// }
+			});
+
+			inputReader = new BufferedReader(new InputStreamReader(new FileInputStream(inputPath)));
+
+			File outputFileTest = new File(outputPath);
+			String prevId = null;
+			if (outputFileTest.exists()) {
+				prevId = readPreviousCompletedId();
+				System.out.println("Last completed Id: " + prevId + "\n\n");
+
 				outputWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputPath, true)));
 			} else {
 				outputWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputPath, false)));
@@ -225,9 +355,7 @@ public class QuestionToWiki {
 
 	public static void main(String[] args) throws Exception {
 		if (args.length != 4) {
-			// "java -cp lucene-wikipedia-0.0.1-jar-with-dependencies.jar
-			// markpeng.wiki.QuestionToWiki /home/uitox/wiki/lucene-wiki-index
-			// validation_set.tsv lucene_top1_or_submit.csv"
+			// "java -cp lucene-wikipedia-0.0.1-jar-with-dependencies.jar markpeng.wiki.QuestionToWiki /home/uitox/wiki/lucene-wiki-index validation_set.tsv lucene_top10_nolengthnorm_or_submit.csv"
 			System.err.println("Usage: java -cp lucene-wikipedia-0.0.1-jar-with-dependencies.jar "
 					+ "markpeng.wiki.QuestionToWiki <path of lucene index folder> " + " <input file> "
 					+ "<output file> <topN>");
@@ -241,7 +369,8 @@ public class QuestionToWiki {
 
 		QuestionToWiki worker = new QuestionToWiki(luceneFolderPath, inputPath, outputPath);
 		// worker.questionAnswering(1);
-		worker.questionAnswering(topN);
+		// worker.questionAnsweringByTopN(topN);
+		worker.questionAnsweringWithoutLengthNorm(topN);
 	}
 
 }

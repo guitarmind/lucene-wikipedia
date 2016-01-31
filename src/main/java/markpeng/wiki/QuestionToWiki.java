@@ -72,14 +72,17 @@ public class QuestionToWiki {
 
 		try {
 			inputReader = new BufferedReader(new InputStreamReader(new FileInputStream(inputPath)));
-			outputWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputPath, true)));
+
 
 			File outputFileTest = new File(outputPath);
 			String prevId = null;
 			if (outputFileTest.exists()) {
 				prevId = readPreviousCompletedId();
 				System.out.println("Last completed Id: " + prevId + "\n\n");
+				
+				outputWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputPath, true)));
 			} else {
+				outputWriter = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputPath, false)));
 				// write file header
 				outputWriter.write("id,correctAnswer");
 				outputWriter.newLine();
@@ -116,7 +119,7 @@ public class QuestionToWiki {
 							Query query = parser.parse("title:(" + qstring + ") OR text:(" + qstring + ")");
 							System.out.println("Ans " + answerId + ":  " + ans);
 
-							// get top 10 hits
+							// get top hits
 							TopScoreDocCollector collector = TopScoreDocCollector.create(topN, true);
 							searcher.search(query, collector);
 							ScoreDoc[] hits = collector.topDocs().scoreDocs;
@@ -221,22 +224,24 @@ public class QuestionToWiki {
 	}
 
 	public static void main(String[] args) throws Exception {
-		if (args.length != 3) {
+		if (args.length != 4) {
 			// "java -cp lucene-wikipedia-0.0.1-jar-with-dependencies.jar
 			// markpeng.wiki.QuestionToWiki /home/uitox/wiki/lucene-wiki-index
 			// validation_set.tsv lucene_top1_or_submit.csv"
 			System.err.println("Usage: java -cp lucene-wikipedia-0.0.1-jar-with-dependencies.jar "
 					+ "markpeng.wiki.QuestionToWiki <path of lucene index folder> " + " <input file> "
-					+ "<output file>");
+					+ "<output file> <topN>");
 			System.exit(-1);
 		}
 
 		String luceneFolderPath = args[0];
 		String inputPath = args[1];
 		String outputPath = args[2];
+		int topN = Integer.parseInt(args[3]);
 
 		QuestionToWiki worker = new QuestionToWiki(luceneFolderPath, inputPath, outputPath);
-		worker.questionAnswering(1);
+		// worker.questionAnswering(1);
+		worker.questionAnswering(topN);
 	}
 
 }
